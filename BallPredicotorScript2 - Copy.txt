@@ -1,0 +1,283 @@
+-- Ensure the game is loaded
+repeat wait() until game:IsLoaded()
+print("[DEBUG] Game loaded. Starting smooth extended preview landing prediction...")
+
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local hrp = character:FindFirstChild("HumanoidRootPart")
+if not hrp then
+    warn("[ERROR] HumanoidRootPart not found!")
+    return
+end
+
+local cam = workspace.CurrentCamera
+
+-- Physics & gravity settings
+local gravity = workspace.Gravity * 0.60
+local gravityMultiplier = 1.1
+local dragCoefficient = 0.04
+
+-- Shot speeds (from your measurements)
+local shotSpeeds = {
+    forehand = {min = 32.5, max = 62.5},
+    backhand = {min = 32.5, max = 62.5},
+    overhead = {min = 35, max = 85},
+    serve = {min = 55, max = 107.5},
+}
+
+-- Trajectory simulation settings (for visual markers)
+local numTrajectoryPoints = 50
+local timeStep = 0.01       -- dt for integration
+local maxDistance = 150
+local cameraMultiplier = 1.3
+local tiltUpOffset = 0.4
+local maxChargeTime = 0.7
+
+-- Extended preview time for aiming (in seconds)
+local aimPreviewTime = 5
+
+-- Parameters for ball search near predicted landing point
+local landingSearchSize = Vector3.new(10, 10, 10)  -- region size around predicted landing point
+
+-- Smoothing factor for expected hit height (0 = no update, 1 = instant update)
+local smoothingFactor = 0.7
+
+-- Ball tracking (for shot starting height)
+local trackedBall = nil
+local expectedHitHeight = hrp.Position.Y
+
+-- Charging state
+local chargeActive = false
+local chargeValue = 0
+local chargeStartTime = 0
+local swingType = nil
+
+-- Markers for trajectory visualization
+local preSwingTrajectoryMarkers = {}
+
+-- Create a persistent landing marker (red dot)
+local landingMarker = Instance.new("Part")
+landingMarker.Size = Vector3.new(1, 1, 1)
+landingMarker.Shape = Enum.PartType.Ball
+landingMarker.Material = Enum.Material.Neon
+landingMarker.Color = Color3.new(1, 0, 0)
+landingMarker.Transparency = 1  -- Hidden by default
+landingMarker.Anchored = true
+landingMarker.CanCollide = false
+landingMarker.Parent = workspace
+
+-- Function to create trajectory markers (optional visualization)
+local function createPreSwingTrajectoryMarkers()
+    local markers = {}
+    for i = 1, numTrajectoryPoints do
+        local marker = Instance.new("Part")
+        marker.Size = Vector3.new(0.3, 0.3, 0.3)
+        marker.Shape = Enum.PartType.Ball
+        marker.Material = Enum.Material.SmoothPlastic
+        marker.Color = Color3.new(0, 1, 0)
+        marker.Transparency = 0.3
+        marker.Anchored = true
+        marker.CanCollide = false
+        marker.Parent = workspace
+        table.insert(markers, marker)
+    end
+    return markers
+end
+
+local function removeTrajectoryMarkers()
+    for _, marker in ipairs(preSwingTrajectoryMarkers) do
+        if marker then marker:Destroy() end
+    end
+    preSwingTrajectoryMarkers = {}
+end
+
+-- Use current charge for shot speed normally; for landing preview we use full power
+local function getShotSpeed()
+    if not swingType or not shotSpeeds[swingType] then
+        return 50
+    end
+    local speeds = shotSpeeds[swingType]
+    return speeds.min + ((speeds.max - speeds.min) * (chargeValue / 100))
+end
+
+local function getStartPos()
+    if not hrp then return Vector3.new(0, 0, 0) end
+    local basePos = hrp.Position
+    local offset = Vector3.new(0, 0, 0)
+    if swingType == "forehand" then
+        offset = cam.CFrame.RightVector * 5
+    elseif swingType == "backhand" then
+        offset = cam.CFrame.RightVector * -5
+    elseif swingType == "overhead" then
+        offset = cam.CFrame.UpVector * 5
+    elseif swingType == "serve" then
+        offset = cam.CFrame.UpVector * 6
+    end
+    return Vector3.new(basePos.X, expectedHitHeight, basePos.Z) + offset
+end
+
+-- RK4 integration for simulated trajectory (optional visualization)
+local function simulateTrajectory(startPos, initialVelocity)
+    if not startPos or not initialVelocity then return {} end
+    local positions = {}
+    local pos = startPos
+    local vel = initialVelocity
+    local dt = timeStep
+    local maxSteps = math.floor(maxChargeTime / dt)
+    local function acceleration(v)
+        return v * (-dragCoefficient) + Vector3.new(0, -gravity * gravityMultiplier, 0)
+    end
+    for i = 1, maxSteps do
+        if (pos - startPos).Magnitude > maxDistance then break end
+        table.insert(positions, pos)
+        local k1_v = acceleration(vel)
+        local k1_p = vel
+        local k2_v = acceleration(vel + k1_v * (dt/2))
+        local k2_p = vel + k1_v * (dt/2)
+        local k3_v = acceleration(vel + k2_v * (dt/2))
+        local k3_p = vel + k2_v * (dt/2)
+        local k4_v = acceleration(vel + k3_v * dt)
+        local k4_p = vel + k3_v * dt
+        vel = vel + (k1_v + 2*k2_v + 2*k3_v + k4_v) * (dt/6)
+        pos = pos + (k1_p + 2*k2_p + 2*k3_p + k4_p) * (dt/6)
+    end
+    return positions
+end
+
+--------------------------------------------------------------------------------
+-- Fixed-Time Landing Prediction for Extended Aiming Preview
+--------------------------------------------------------------------------------
+local function predictLandingPointFixedTime(startPos, swingType, previewTime)
+    local speeds = shotSpeeds[swingType] or {min = 50, max = 50}
+    local fullPowerSpeed = speeds.max
+    local lookVector = (cam.CFrame.LookVector + Vector3.new(0, tiltUpOffset, 0)).Unit
+    local initialVelocity = fullPowerSpeed * (lookVector * cameraMultiplier)
+    
+    local pos = startPos
+    local vel = initialVelocity
+    local dt = timeStep
+    local steps = math.floor(previewTime / dt)
+    local function acceleration(v)
+        return v * (-dragCoefficient) + Vector3.new(0, -gravity * gravityMultiplier, 0)
+    end
+    for i = 1, steps do
+        local k1_v = acceleration(vel)
+        local k1_p = vel
+        local k2_v = acceleration(vel + k1_v * (dt/2))
+        local k2_p = vel + k1_v * (dt/2)
+        local k3_v = acceleration(vel + k2_v * (dt/2))
+        local k3_p = vel + k2_v * (dt/2)
+        local k4_v = acceleration(vel + k3_v * dt)
+        local k4_p = vel + k3_v * dt
+        vel = vel + (k1_v + 2*k2_v + 2*k3_v + k4_v) * (dt/6)
+        pos = pos + (k1_p + 2*k2_p + 2*k3_p + k4_p) * (dt/6)
+    end
+    return pos
+end
+
+--------------------------------------------------------------------------------
+-- New Ball Tracking: Find a ball near the predicted landing point.
+-- When charging, we compute the predicted landing point and then search in a small box around it.
+--------------------------------------------------------------------------------
+local function findBallNearLandingPoint(predictedLandingPoint)
+    local parts = workspace:GetPartBoundsInBox(CFrame.new(predictedLandingPoint), landingSearchSize)
+    local candidate = nil
+    local closestDist = math.huge
+    for _, part in ipairs(parts) do
+        if part:IsA("BasePart") and string.find(string.lower(part.Name), "ball") then
+            local distance = (part.Position - predictedLandingPoint).Magnitude
+            if distance < closestDist then
+                candidate = part
+                closestDist = distance
+            end
+        end
+    end
+    return candidate, closestDist
+end
+
+--------------------------------------------------------------------------------
+-- Main Update Loop: Update every frame for maximum responsiveness
+--------------------------------------------------------------------------------
+RunService.RenderStepped:Connect(function(deltaTime)
+    local startPos = getStartPos()
+    
+    if chargeActive and swingType then
+        local elapsed = tick() - chargeStartTime
+        chargeValue = math.clamp((elapsed / maxChargeTime) * 100, 0, 100)
+
+        -- Calculate predicted landing point for current parameters
+        local predictedLandingPoint = predictLandingPointFixedTime(startPos, swingType, aimPreviewTime)
+        
+        -- Use the predicted landing point to search for a ball nearby
+        local ballCandidate, distCandidate = findBallNearLandingPoint(predictedLandingPoint)
+        if ballCandidate then
+            trackedBall = ballCandidate
+        end
+        
+        -- Update expected hit height if we have a tracked ball
+        if trackedBall then
+            local targetHeight = trackedBall.Position.Y
+            expectedHitHeight = expectedHitHeight + (targetHeight - expectedHitHeight) * smoothingFactor
+        end
+
+        -- Update trajectory markers (optional visualization)
+        local lookVector = (cam.CFrame.LookVector + Vector3.new(0, tiltUpOffset, 0)).Unit
+        local shotSpeed = getShotSpeed()
+        local initialVelocity = shotSpeed * (lookVector * cameraMultiplier)
+        local positions = simulateTrajectory(startPos, initialVelocity)
+        for i, marker in ipairs(preSwingTrajectoryMarkers) do
+            local index = math.floor((i - 1) / (numTrajectoryPoints - 1) * (#positions - 1)) + 1
+            marker.Position = positions[index] or startPos
+        end
+
+        -- Update landing marker (red dot) while charging:
+        landingMarker.Transparency = 0.3  -- Show the dot
+        landingMarker.Position = predictedLandingPoint
+    else
+        landingMarker.Transparency = 1  -- Hide the landing marker when not charging
+        trackedBall = nil  -- reset tracked ball when not charging
+    end
+end)
+
+--------------------------------------------------------------------------------
+-- Input Handling: Start/stop charging a shot
+--------------------------------------------------------------------------------
+UIS.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        swingType = "backhand"
+    elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
+        swingType = "forehand"
+    elseif input.KeyCode == Enum.KeyCode.Space then
+        swingType = "overhead"
+    elseif input.KeyCode == Enum.KeyCode.E then
+        swingType = "serve"
+    else
+        return
+    end
+
+    chargeActive = true
+    chargeValue = 0
+    chargeStartTime = tick()
+    
+    if #preSwingTrajectoryMarkers == 0 then
+        preSwingTrajectoryMarkers = createPreSwingTrajectoryMarkers()
+    end
+end)
+
+UIS.InputEnded:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if (input.UserInputType == Enum.UserInputType.MouseButton1 and swingType == "backhand")
+       or (input.UserInputType == Enum.UserInputType.MouseButton2 and swingType == "forehand")
+       or (input.KeyCode == Enum.KeyCode.Space and swingType == "overhead")
+       or (input.KeyCode == Enum.KeyCode.E and swingType == "serve") then
+        chargeActive = false
+        chargeValue = 0
+        swingType = nil
+        removeTrajectoryMarkers()
+        trackedBall = nil
+    end
+end)
