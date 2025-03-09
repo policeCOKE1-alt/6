@@ -69,6 +69,23 @@ landingMarker.Anchored = true
 landingMarker.CanCollide = false
 landingMarker.Parent = workspace
 
+-- Global toggle and commands for BallPredictor2
+_G.BallPredictor2Enabled = true
+_G.BallPredictor2On = function()
+    _G.BallPredictor2Enabled = true
+    print("[DEBUG] BallPredictor2 turned ON")
+end
+_G.BallPredictor2Off = function()
+    _G.BallPredictor2Enabled = false
+    print("[DEBUG] BallPredictor2 turned OFF")
+    -- Hide landing marker and remove trajectory markers when turned off
+    landingMarker.Transparency = 1
+    for _, marker in ipairs(preSwingTrajectoryMarkers) do
+        if marker then marker:Destroy() end
+    end
+    preSwingTrajectoryMarkers = {}
+end
+
 -- Function to create trajectory markers (optional visualization)
 local function createPreSwingTrajectoryMarkers()
     local markers = {}
@@ -202,6 +219,11 @@ end
 -- Main Update Loop: Update every frame for maximum responsiveness
 --------------------------------------------------------------------------------
 RunService.RenderStepped:Connect(function(deltaTime)
+    if not _G.BallPredictor2Enabled then
+        landingMarker.Transparency = 1
+        return
+    end
+
     local startPos = getStartPos()
     
     if chargeActive and swingType then
