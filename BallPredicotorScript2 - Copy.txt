@@ -1,6 +1,12 @@
+-- BallPredictor2.txt (Modified to support stopping)
+
 -- Ensure the game is loaded
 repeat wait() until game:IsLoaded()
 print("[DEBUG] Game loaded. Starting smooth extended preview landing prediction...")
+
+local predictor2 = {}
+predictor2.running = true
+predictor2.connections = {}
 
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
@@ -78,7 +84,7 @@ end
 _G.BallPredictor2Off = function()
     _G.BallPredictor2Enabled = false
     print("[DEBUG] BallPredictor2 turned OFF")
-    -- Hide landing marker and remove trajectory markers when turned off
+    -- When turned off via global command, hide landing marker and remove trajectory markers
     landingMarker.Transparency = 1
     for _, marker in ipairs(preSwingTrajectoryMarkers) do
         if marker then marker:Destroy() end
@@ -197,7 +203,7 @@ end
 
 --------------------------------------------------------------------------------
 -- New Ball Tracking: Find a ball near the predicted landing point.
--- When charging, we compute the predicted landing point and then search in a small box around it.
+-- When charging, compute the predicted landing point and then search in a small box around it.
 --------------------------------------------------------------------------------
 local function findBallNearLandingPoint(predictedLandingPoint)
     local parts = workspace:GetPartBoundsInBox(CFrame.new(predictedLandingPoint), landingSearchSize)
@@ -216,9 +222,9 @@ local function findBallNearLandingPoint(predictedLandingPoint)
 end
 
 --------------------------------------------------------------------------------
--- Main Update Loop: Update every frame for maximum responsiveness
+-- Main Update Loop: Update every frame for maximum responsiveness.
 --------------------------------------------------------------------------------
-RunService.RenderStepped:Connect(function(deltaTime)
+predictor2.connections.renderStepped = RunService.RenderStepped:Connect(function(deltaTime)
     if not _G.BallPredictor2Enabled then
         landingMarker.Transparency = 1
         return
@@ -267,7 +273,7 @@ end)
 --------------------------------------------------------------------------------
 -- Input Handling: Start/stop charging a shot
 --------------------------------------------------------------------------------
-UIS.InputBegan:Connect(function(input, gameProcessed)
+predictor2.connections.inputBegan = UIS.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     if input.UserInputType == Enum.UserInputType.MouseButton1 then
         swingType = "backhand"
@@ -290,7 +296,7 @@ UIS.InputBegan:Connect(function(input, gameProcessed)
     end
 end)
 
-UIS.InputEnded:Connect(function(input, gameProcessed)
+predictor2.connections.inputEnded = UIS.InputEnded:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     if (input.UserInputType == Enum.UserInputType.MouseButton1 and swingType == "backhand")
        or (input.UserInputType == Enum.UserInputType.MouseButton2 and swingType == "forehand")
@@ -303,3 +309,22 @@ UIS.InputEnded:Connect(function(input, gameProcessed)
         trackedBall = nil
     end
 end)
+
+--------------------------------------------------------------------------------
+-- Stop method: Disconnect all connections and clean up.
+--------------------------------------------------------------------------------
+function predictor2.stop()
+    predictor2.running = false
+    _G.BallPredictor2Enabled = false
+    landingMarker.Transparency = 1
+    removeTrajectoryMarkers()
+    for key, conn in pairs(predictor2.connections) do
+        if conn and conn.Disconnect then
+            conn:Disconnect()
+        end
+    end
+    print("[DEBUG] BallPredictor2 stopped.")
+end
+
+print("[DEBUG] BallPredictor2 started.")
+return predictor2
