@@ -2,7 +2,6 @@
 
 -- Ensure the game is loaded
 repeat wait() until game:IsLoaded()
-print("[DEBUG] Game loaded. Starting smooth extended preview landing prediction...")
 
 local predictor2 = {}
 predictor2.running = true
@@ -79,12 +78,9 @@ landingMarker.Parent = workspace
 _G.BallPredictor2Enabled = true
 _G.BallPredictor2On = function()
     _G.BallPredictor2Enabled = true
-    print("[DEBUG] BallPredictor2 turned ON")
 end
 _G.BallPredictor2Off = function()
     _G.BallPredictor2Enabled = false
-    print("[DEBUG] BallPredictor2 turned OFF")
-    -- When turned off via global command, hide landing marker and remove trajectory markers
     landingMarker.Transparency = 1
     for _, marker in ipairs(preSwingTrajectoryMarkers) do
         if marker then marker:Destroy() end
@@ -236,22 +232,18 @@ predictor2.connections.renderStepped = RunService.RenderStepped:Connect(function
         local elapsed = tick() - chargeStartTime
         chargeValue = math.clamp((elapsed / maxChargeTime) * 100, 0, 100)
 
-        -- Calculate predicted landing point for current parameters
         local predictedLandingPoint = predictLandingPointFixedTime(startPos, swingType, aimPreviewTime)
         
-        -- Use the predicted landing point to search for a ball nearby
         local ballCandidate, distCandidate = findBallNearLandingPoint(predictedLandingPoint)
         if ballCandidate then
             trackedBall = ballCandidate
         end
         
-        -- Update expected hit height if we have a tracked ball
         if trackedBall then
             local targetHeight = trackedBall.Position.Y
             expectedHitHeight = expectedHitHeight + (targetHeight - expectedHitHeight) * smoothingFactor
         end
 
-        -- Update trajectory markers (optional visualization)
         local lookVector = (cam.CFrame.LookVector + Vector3.new(0, tiltUpOffset, 0)).Unit
         local shotSpeed = getShotSpeed()
         local initialVelocity = shotSpeed * (lookVector * cameraMultiplier)
@@ -261,12 +253,11 @@ predictor2.connections.renderStepped = RunService.RenderStepped:Connect(function
             marker.Position = positions[index] or startPos
         end
 
-        -- Update landing marker (red dot) while charging:
-        landingMarker.Transparency = 0.3  -- Show the dot
+        landingMarker.Transparency = 0.3
         landingMarker.Position = predictedLandingPoint
     else
-        landingMarker.Transparency = 1  -- Hide the landing marker when not charging
-        trackedBall = nil  -- reset tracked ball when not charging
+        landingMarker.Transparency = 1
+        trackedBall = nil
     end
 end)
 
@@ -323,8 +314,6 @@ function predictor2.stop()
             conn:Disconnect()
         end
     end
-    print("[DEBUG] BallPredictor2 stopped.")
 end
 
-print("[DEBUG] BallPredictor2 started.")
 return predictor2
